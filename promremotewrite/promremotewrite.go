@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -27,10 +28,12 @@ import (
 )
 
 var (
-	writeURL     = flag.String("url", "", "URL for remote write endpoint")
-	writeTimeout = flag.Duration("write_timeout", 5*time.Minute, "write timeout")
-	batchSize    = flag.Uint("batch_size", 100000, "number of samples per request")
-	concurrency  = flag.Uint("concurrency", 1, "number of influxdb writers")
+	writeURL      = flag.String("url", "", "URL for remote write endpoint")
+	writeTimeout  = flag.Duration("write_timeout", 5*time.Minute, "write timeout")
+	batchSize     = flag.Uint("batch_size", 100000, "number of samples per request")
+	concurrency   = flag.Uint("concurrency", 1, "number of influxdb writers")
+	basicAuthUser = flag.String("basic_auth_user", "", "basic auth user")
+	basicAuthPass = flag.String("basic_auth_pass", "", "basic auth password")
 )
 
 // converts a slice of SampleStream messages into remote write requests and sends them into the channel.
@@ -101,6 +104,13 @@ func write(client *http.Client, req *prompb.WriteRequest) error {
 	httpReq.Header.Add("Content-Encoding", "snappy")
 	httpReq.Header.Set("Content-Type", "application/x-protobuf")
 	httpReq.Header.Set("X-Prometheus-Remote-Write-Version", "0.1.0")
+
+	// basic auth
+	if *basicAuthUser != "" && *basicAuthPass != "" {
+		auth := *basicAuthUser + ":" + *basicAuthPass
+		encodedAuth := base64.StdEncoding.EncodeToString([]byte(auth))
+		httpReq.Header.Add("Authorization", "Basic "+encodedAuth)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *writeTimeout)
 	defer cancel()

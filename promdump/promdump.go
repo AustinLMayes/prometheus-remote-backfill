@@ -7,12 +7,15 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"math"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/api"
@@ -28,10 +31,25 @@ var (
 	metric         = flag.String("metric", "", "metric to fetch (can include label values)")
 	out            = flag.String("out", "", "output file prefix")
 	batchesPerFile = flag.Uint("batches_per_file", 1, "batches per output file")
+	outputFormat   = flag.String("output_format", "json", "output format (json or prom)")
+	basicAuthUser  = flag.String("basic_auth_user", "", "basic auth username")
+	basicAuthPass  = flag.String("basic_auth_pass", "", "basic auth password")
+	mimirOrgID     = flag.String("mimir_org_id", "prod", "Org ID to pass to Mimir")
 )
 
-// dump a slice of SampleStream messages to a json file.
 func writeFile(values *[]*model.SampleStream, fileNum uint) error {
+	switch *outputFormat {
+	case "json":
+		return writeJSONFile(values, fileNum)
+	case "prom":
+		return writePromFile(values, fileNum)
+	default:
+		return fmt.Errorf("unknown output format %s", *outputFormat)
+	}
+}
+
+// dump a slice of SampleStream messages to a json file.
+func writeJSONFile(values *[]*model.SampleStream, fileNum uint) error {
 	if len(*values) == 0 {
 		return nil
 	}
@@ -41,6 +59,47 @@ func writeFile(values *[]*model.SampleStream, fileNum uint) error {
 		return err
 	}
 	return ioutil.WriteFile(filename, valuesJSON, 0644)
+}
+
+// dump a slice of SampleStream messages to a prom file.
+func writePromFile(values *[]*model.SampleStream, fileNum uint) error {
+	if len(*values) == 0 {
+		return nil
+	}
+
+	// File name format
+	filename := fmt.Sprintf("%s.%05d", *out, fileNum)
+
+	var builder strings.Builder
+
+	for _, s := range *values {
+		// Metric name and labels
+		name := s.Metric["__name__"]
+		delete(s.Metric, "__name__")
+		labels := ""
+		for k, v := range s.Metric {
+			labels += fmt.Sprintf("%s=\"%s\",", k, v)
+		}
+		if len(labels) > 0 {
+			labels = "{" + labels[:len(labels)-1] + "}"
+		}
+
+		for _, v := range s.Values {
+			timestamp := time.Unix(0, int64(v.Timestamp)*int64(time.Millisecond))
+			builder.WriteString(fmt.Sprintf("%s%s %v %v\n", name, labels, v.Value, timestamp.UnixMilli()))
+		}
+	}
+
+	log.Printf("Built %d lines", builder.Len())
+
+	// Convert the builder content to a string and write to file
+	content := builder.String()
+
+	if err := ioutil.WriteFile(filename, []byte(content), 0644); err != nil {
+		return fmt.Errorf("error writing to file: %w", err)
+	}
+
+	return nil
 }
 
 func main() {
@@ -72,7 +131,7 @@ func main() {
 	log.Printf("Will query from %v to %v in %v batches\n", beginTS, endTS, batches)
 
 	ctx := context.Background()
-	client, err := api.NewClient(api.Config{Address: *baseURL})
+	client, err := api.NewClient(api.Config{Address: *baseURL, RoundTripper: roundTripperWithAuthAndHeader()})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -91,7 +150,7 @@ func main() {
 		query := fmt.Sprintf("%s[%ds]", *metric, int64(lookback))
 		log.Printf("Querying %s at %v", query, queryTS)
 		value, err := api.Query(ctx, query, queryTS)
-                
+
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -109,4 +168,29 @@ func main() {
 		}
 	}
 	writeFile(&values, fileNum)
+}
+
+// roundTripperWithAuthAndHeader returns an http.RoundTripper that adds basic auth and a custom header
+func roundTripperWithAuthAndHeader() http.RoundTripper {
+	if *basicAuthUser == "" || *basicAuthPass == "" {
+		return http.DefaultTransport
+	}
+
+	return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		auth := *basicAuthUser + ":" + *basicAuthPass
+		encodedAuth := base64.StdEncoding.EncodeToString([]byte(auth))
+		req.Header.Add("Authorization", "Basic "+encodedAuth)
+		if *mimirOrgID != "" {
+			req.Header.Add("X-Scope-OrgID", *mimirOrgID)
+		}
+		return http.DefaultTransport.RoundTrip(req)
+	})
+}
+
+// roundTripperFunc is a helper type to create custom RoundTripper from a function
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+// RoundTrip implements the RoundTripper interface
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
