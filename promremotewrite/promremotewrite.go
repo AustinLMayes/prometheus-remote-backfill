@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -34,6 +35,7 @@ var (
 	concurrency   = flag.Uint("concurrency", 1, "number of influxdb writers")
 	basicAuthUser = flag.String("basic_auth_user", "", "basic auth user")
 	basicAuthPass = flag.String("basic_auth_pass", "", "basic auth password")
+	ignoreTLS     = flag.Bool("ignore_tls", false, "ignore TLS verification")
 )
 
 // converts a slice of SampleStream messages into remote write requests and sends them into the channel.
@@ -155,6 +157,11 @@ func main() {
 		go func() {
 			defer wg.Done()
 			c := &http.Client{}
+			if *ignoreTLS {
+				c.Transport = &http.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				}
+			}
 			for r := range requests {
 				if err := write(c, r); err != nil {
 					log.Fatal(err)

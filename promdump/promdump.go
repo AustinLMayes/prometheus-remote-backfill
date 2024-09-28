@@ -135,6 +135,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	api := v1.NewAPI(client)
 
 	values := make([]*model.SampleStream, 0, 0)
@@ -173,7 +174,15 @@ func main() {
 // roundTripperWithAuthAndHeader returns an http.RoundTripper that adds basic auth and a custom header
 func roundTripperWithAuthAndHeader() http.RoundTripper {
 	if *basicAuthUser == "" || *basicAuthPass == "" {
-		return http.DefaultTransport
+		if *mimirOrgID == "" {
+			return http.DefaultTransport
+		}
+		return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if *mimirOrgID != "" {
+				req.Header.Add("X-Scope-OrgID", *mimirOrgID)
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		})
 	}
 
 	return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
