@@ -90,7 +90,7 @@ func writePromFile(values *[]*model.SampleStream, fileNum uint) error {
 		}
 	}
 
-	log.Printf("Built %d lines", builder.Len())
+	log.Printf("Built %d lines", strings.Count(builder.String(), "\n"))
 
 	// Convert the builder content to a string and write to file
 	content := builder.String()
